@@ -1,0 +1,6 @@
+__pycache__/
+*.grib2
+*.bin
+*.idx
+gfsenv/
+.venv/
