@@ -3,8 +3,9 @@
 GFS -> R2 更新スクリプト（GitHub Actions から6時間ごとに実行）。
 
 NOAA GFS（パブリックドメイン）の最新サイクルを取得し、0.25°を0.5°に間引いて
-コンパクトなバイナリ（レイアウト [iy][ix][h][temp,wind,windDir,precip] float32）に
+コンパクトなバイナリ（レイアウト [iy][ix][h][temp,wind,windDir,precip,cloud] float32）に
 変換、Cloudflare R2（S3互換API）へ gfs.bin / gfs_meta.json としてアップロードする。
+cloud(全雲量%)は Worker 側で天気記号(晴/曇/雨/雪)を導出するために付与する。
 Worker はこのバイナリをセル単位の range read で1回だけ読み、比較モデル "gfs" として返す。
 
 必要な環境変数（GitHub Secrets）:
@@ -20,7 +21,7 @@ import boto3
 RES = 0.5
 NLAT, NLON = 361, 720
 FHOURS = list(range(1, 49))          # f001..f048（1時間刻み・48h）
-VARS = ["temp", "wind", "windDir", "precip"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud"]
 BUCKET = "multiweather-gfs"
 
 
@@ -28,8 +29,10 @@ def url(date, hh, fh):
     return (
         f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?"
         f"dir=%2Fgfs.{date}%2F{hh}%2Fatmos&file=gfs.t{hh}z.pgrb2.0p25.f{fh:03d}"
-        f"&var_TMP=on&var_UGRD=on&var_VGRD=on&var_APCP=on"
+        f"&var_TMP=on&var_UGRD=on&var_VGRD=on&var_APCP=on&var_TCDC=on"
         f"&lev_2_m_above_ground=on&lev_10_m_above_ground=on&lev_surface=on"
+        f"&lev_entire_atmosphere=on"
+        f"&lev_entire_atmosphere_%28considered_as_a_single_layer%29=on"
         f"&leftlon=0&rightlon=360&toplat=90&bottomlat=-90"
     )
 
@@ -81,6 +84,7 @@ def main():
     spd = np.full_like(temp, np.nan)
     wdir = np.full_like(temp, np.nan)
     apcp = np.zeros((H, NLAT, NLON), np.float32)
+    cloud = np.full_like(temp, np.nan)
     for i, fh in enumerate(FHOURS):
         try:
             temp[i] = (rd(fh, {"typeOfLevel": "heightAboveGround", "level": 2, "shortName": "2t"})["t2m"].values - 273.15)[::2, ::2]
@@ -92,6 +96,18 @@ def main():
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values[::2, ::2]
             except Exception:
                 apcp[i] = 0
+            # 全雲量(TCDC, %)。天気記号(晴/曇)の導出に使う。eccodes のバージョン差で
+            # typeOfLevel 名が揺れるため候補を順に試し、取れなければ NaN のまま（Worker側で記号なし）。
+            for keys in (
+                {"typeOfLevel": "atmosphereSingleLayer", "shortName": "tcc"},
+                {"typeOfLevel": "atmosphere", "shortName": "tcc"},
+                {"typeOfLevel": "unknown", "shortName": "tcc"},
+            ):
+                try:
+                    cloud[i] = rd(fh, keys)["tcc"].values[::2, ::2]
+                    break
+                except Exception:
+                    continue
         except Exception as e:
             print(f"parse warn f{fh}: {e}", file=sys.stderr)
 
@@ -101,8 +117,8 @@ def main():
         precip[i] = apcp[i] if (fh - 1) % 6 == 0 else apcp[i] - apcp[i - 1]
     precip = np.clip(precip, 0, None)
 
-    arr = np.stack([temp, spd, wdir, precip], axis=-1)      # (H,NLAT,NLON,4)
-    arr = np.transpose(arr, (1, 2, 0, 3)).astype("<f4")     # (NLAT,NLON,H,4) C-order
+    arr = np.stack([temp, spd, wdir, precip, cloud], axis=-1)  # (H,NLAT,NLON,5)
+    arr = np.transpose(arr, (1, 2, 0, 3)).astype("<f4")     # (NLAT,NLON,H,5) C-order
     open("/tmp/gfs.bin", "wb").write(arr.tobytes())
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
