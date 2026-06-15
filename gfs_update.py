@@ -96,12 +96,15 @@ def main():
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values[::2, ::2]
             except Exception:
                 apcp[i] = 0
-            # 全雲量(TCDC, %)。天気記号(晴/曇)の導出に使う。eccodes のバージョン差で
-            # typeOfLevel 名が揺れるため候補を順に試し、取れなければ NaN のまま（Worker側で記号なし）。
+            # 全雲量(TCDC, %)。天気記号(晴/曇)の導出に使う。
+            # GFS の entire-atmosphere TCDC は instant と "0-1 hour ave" の2メッセージがあり、
+            # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)。instant優先・avgフォールバック。
+            # typeOfLevel 名は eccodes 版差で atmosphere / entireAtmosphere の両方を試す。
             for keys in (
-                {"typeOfLevel": "atmosphereSingleLayer", "shortName": "tcc"},
-                {"typeOfLevel": "atmosphere", "shortName": "tcc"},
-                {"typeOfLevel": "unknown", "shortName": "tcc"},
+                {"typeOfLevel": "atmosphere", "shortName": "tcc", "stepType": "instant"},
+                {"typeOfLevel": "entireAtmosphere", "shortName": "tcc", "stepType": "instant"},
+                {"typeOfLevel": "atmosphere", "shortName": "tcc", "stepType": "avg"},
+                {"typeOfLevel": "entireAtmosphere", "shortName": "tcc", "stepType": "avg"},
             ):
                 try:
                     cloud[i] = rd(fh, keys)["tcc"].values[::2, ::2]
@@ -116,6 +119,9 @@ def main():
     for i, fh in enumerate(FHOURS):
         precip[i] = apcp[i] if (fh - 1) % 6 == 0 else apcp[i] - apcp[i - 1]
     precip = np.clip(precip, 0, None)
+
+    # 診断: 雲量が何時間分パースできたか（0 なら TCDC 抽出失敗＝Worker側で晴/曇アイコンが出ない）。
+    print(f"cloud parsed for {int(np.isfinite(cloud).any(axis=(1, 2)).sum())}/{H} hours", file=sys.stderr)
 
     arr = np.stack([temp, spd, wdir, precip, cloud], axis=-1)  # (H,NLAT,NLON,5)
     arr = np.transpose(arr, (1, 2, 0, 3)).astype("<f4")     # (NLAT,NLON,H,5) C-order
