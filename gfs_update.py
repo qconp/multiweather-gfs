@@ -11,7 +11,7 @@ Worker はこのバイナリをセル単位の range read で1回だけ読み、
 必要な環境変数（GitHub Secrets）:
   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
 """
-import os, sys, urllib.request, json
+import os, sys, time, urllib.request, json
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -23,6 +23,15 @@ NLAT, NLON = 361, 720
 FHOURS = list(range(1, 49))          # f001..f048（1時間刻み・48h）
 VARS = ["temp", "wind", "windDir", "precip", "cloud"]
 BUCKET = "multiweather-gfs"
+
+# NOMADS の filter CGI は混雑時に接続を掴んだまま応答しないことがある。タイムアウト無しで
+# 掴むと1本のハングが8並列の枠を潰し、ジョブが25分の上限で cancel される（2026-08-06 実際に発生）。
+# 1本あたりを必ず切り、取り切れなかった時間は落として先へ進む。
+DL_TIMEOUT = 90          # 1本あたり秒
+DL_ATTEMPTS = 3          # 同一時間の再試行回数
+DL_DEADLINE = 15 * 60    # ダウンロード全体の締切（ジョブ上限25分に対する余裕）
+CYCLE_TIMEOUT = 20       # サイクル探索は速く諦める（4回遡っても80秒）
+MIN_HOURS = 40           # これを下回る時間しか揃わなければアップロードしない
 
 
 def url(date, hh, fh):
@@ -37,6 +46,15 @@ def url(date, hh, fh):
     )
 
 
+def fetch(u, timeout):
+    """1本取得。タイムアウト必須・中身が GRIB として小さすぎるものは失敗扱い。"""
+    with urllib.request.urlopen(u, timeout=timeout) as r:
+        data = r.read()
+    if r.status != 200 or len(data) <= 1000:
+        raise IOError(f"bad response: status={r.status} len={len(data)}")
+    return data
+
+
 def find_cycle():
     """利用可能な最新サイクルを検出（現在UTCから約4hの遅延を見込み、6h刻みで遡る）。"""
     base = datetime.now(timezone.utc) - timedelta(hours=4)
@@ -45,13 +63,11 @@ def find_cycle():
         c = base - timedelta(hours=6 * back)
         date, hh = c.strftime("%Y%m%d"), c.strftime("%H")
         try:
-            with urllib.request.urlopen(url(date, hh, 1), timeout=90) as r:
-                data = r.read()
-                if r.status == 200 and len(data) > 1000:
-                    open("/tmp/g_001.grib2", "wb").write(data)
-                    return date, hh
-        except Exception:
-            continue
+            data = fetch(url(date, hh, 1), CYCLE_TIMEOUT)
+            open("/tmp/g_001.grib2", "wb").write(data)
+            return date, hh
+        except Exception as e:
+            print(f"cycle probe {date} {hh}Z: {e}", file=sys.stderr)
     return None
 
 
@@ -63,14 +79,31 @@ def main():
     date, hh = cyc
     print(f"cycle: {date} {hh}Z")
 
+    started = time.monotonic()
+
     def dl(fh):
-        try:
-            urllib.request.urlretrieve(url(date, hh, fh), f"/tmp/g_{fh:03d}.grib2")
-        except Exception as e:
-            print(f"download warn f{fh}: {e}", file=sys.stderr)
+        for attempt in range(1, DL_ATTEMPTS + 1):
+            if time.monotonic() - started > DL_DEADLINE:
+                print(f"download skip f{fh}: past deadline", file=sys.stderr)
+                return False
+            try:
+                data = fetch(url(date, hh, fh), DL_TIMEOUT)
+                open(f"/tmp/g_{fh:03d}.grib2", "wb").write(data)
+                return True
+            except Exception as e:
+                print(f"download warn f{fh} ({attempt}/{DL_ATTEMPTS}): {e}", file=sys.stderr)
+                time.sleep(2 * attempt)  # NOMADS は混雑時に絞る。少し待って譲る。
+        return False
 
     with ThreadPoolExecutor(max_workers=8) as ex:
-        list(ex.map(dl, [f for f in FHOURS if f != 1]))
+        ok = sum(ex.map(dl, [f for f in FHOURS if f != 1])) + 1  # f001 は find_cycle が取得済み
+    print(f"downloaded {ok}/{len(FHOURS)} hours in {int(time.monotonic() - started)}s")
+    # 半端なデータで R2 を上書きしない。前サイクルを残したまま失敗させ、CI の通知に出す
+    # （黙って穴あきを配ると、アプリ側からは正常なデータに見える）。
+    if ok < MIN_HOURS:
+        print(f"ERROR: only {ok}/{len(FHOURS)} hours downloaded (need {MIN_HOURS}) — "
+              "keeping the previous cycle in R2", file=sys.stderr)
+        sys.exit(1)
 
     def rd(fh, keys):
         return xr.open_dataset(
