@@ -28,8 +28,12 @@ import numpy as np
 import xarray as xr
 
 BASE = "https://data.ecmwf.int/forecasts"
-RES = 0.5                      # 0.25° 配信を 1つおきに間引く（GFS 列と粒度を揃える）
-NLAT, NLON = 361, 720
+# ★ 間引かない。0.5°(約55km)にすると沿岸の格子に海が混ざり、昼夜の温度変化が平均化されて
+#   消える（東京湾で実測: met.no/Apple が日較差 6.6/6.8℃ のところ ECMWF/GFS は 3.6/4.1℃）。
+#   内陸では4モデルが一致するので、粗さそのものが原因。港湾・測量・ドローンの現場が
+#   主要用途である以上、沿岸で潰れるのは実害。容量は増えるがセル読み出しは変わらない。
+RES = 0.25
+NLAT, NLON = 721, 1440
 STEPS = list(range(0, 145, 3))  # ECMWF oper は 3 時間刻み。+144h まで
 VARS = ["temp", "wind", "windDir", "precip", "cloud"]
 PARAMS = ["2t", "10u", "10v", "tp", "tcc"]
@@ -117,7 +121,7 @@ def fetch_step(date: str, hh: str, step: int) -> dict[str, np.ndarray]:
             raise RuntimeError(
                 f"{p}: longitude runs {lons360[0]}..{lons360[-1]} after normalising")
 
-        out[p] = arr[::2, ::2]
+        out[p] = arr
         ds.close()
         os.unlink(path)
     return out
@@ -131,12 +135,20 @@ def main() -> int:
     date, hh = cyc
     print(f"cycle: {date} {hh}Z, {len(STEPS)} steps")
 
-    H = len(STEPS)
-    temp = np.full((H, NLAT, NLON), np.nan, np.float32)
-    spd = np.full_like(temp, np.nan)
-    wdir = np.full_like(temp, np.nan)
-    tp_acc = np.full_like(temp, np.nan)   # tp は step 0 からの積算（単位 m）
-    cloud = np.full_like(temp, np.nan)
+    H, V = len(STEPS), len(VARS)
+
+    # ★ メモリと書き込み順の両方を成立させる形。
+    #   - 変数ごとに (H, NLAT, NLON) で持つ（取得時の書き込みが連続になる）
+    #   - 出力は緯度行ごとに (NLON, H, V) を組み立てて逐次書き出す
+    #   (NLAT, NLON, H, V) を一度に確保して直接埋めると、書き込みが 980B 間隔の飛び飛びに
+    #   なって CI が時間切れになる。逆に np.stack + transpose を挟むと 0.25° では同じ大きさの
+    #   配列が2本増えて 3GB 必要になる。行単位のストリーム書き出しなら両方避けられる。
+    shape = (H, NLAT, NLON)
+    temp = np.full(shape, np.nan, np.float32)
+    spd = np.full(shape, np.nan, np.float32)
+    wdir = np.full(shape, np.nan, np.float32)
+    tp = np.full(shape, np.nan, np.float32)
+    cloud = np.full(shape, np.nan, np.float32)
 
     def one(i_step):
         i, step = i_step
@@ -145,28 +157,41 @@ def main() -> int:
         except Exception as e:
             print(f"warn step {step}: {e}", file=sys.stderr)
             return
-        temp[i] = d["2t"] - 273.15
         u, v = d["10u"], d["10v"]
+        temp[i] = d["2t"] - 273.15
         spd[i] = np.sqrt(u * u + v * v)
         wdir[i] = np.degrees(np.arctan2(-u, -v)) % 360
-        tp_acc[i] = d["tp"] * 1000.0            # m -> mm
-        cloud[i] = d["tcc"] * 100.0             # 0..1 -> %
+        tp[i] = d["tp"] * 1000.0    # m -> mm（この時点では step0 からの積算）
+        cloud[i] = d["tcc"] * 100.0  # 0..1 -> %
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         list(ex.map(one, list(enumerate(STEPS))))
 
-    # 脱積算。ECMWF の tp はバケットではなく step 0 からの通し積算なので単純差分でよい
-    # （GFS の 6h バケット扱いをそのまま持ち込むと二重に引いてしまう）。
-    precip = np.zeros_like(tp_acc)
-    precip[0] = np.nan_to_num(tp_acc[0])
-    for i in range(1, H):
-        precip[i] = np.nan_to_num(tp_acc[i]) - np.nan_to_num(tp_acc[i - 1])
-    precip = np.clip(precip, 0, None)
+    # 中身が空でも「成功」で終えないこと。fetch_step の失敗は警告にして続行する作りなので、
+    # 全ステップ落ちても配列が NaN のまま処理が最後まで通ってしまう（初回実行で実際に発生）。
+    good = int(np.isfinite(temp).any(axis=(1, 2)).sum())
+    print(f"steps with data: {good}/{H}")
+    if good < H * 0.8:
+        print(f"ERROR: only {good}/{H} steps carry data — refusing to upload", file=sys.stderr)
+        return 1
 
-    arr = np.stack([temp, spd, wdir, precip, cloud], axis=-1)   # (H,NLAT,NLON,V)
-    arr = np.transpose(arr, (1, 2, 0, 3)).astype("<f4")         # (NLAT,NLON,H,V)
+    # 脱積算。ECMWF の tp は step 0 からの通し積算なので単純差分でよい（GFS の 6h バケット
+    # 扱いを持ち込むと二重に引く）。後ろから引けば作業用の複製が要らない。
+    np.nan_to_num(tp, copy=False)
+    for i in range(H - 1, 0, -1):
+        tp[i] -= tp[i - 1]
+    np.clip(tp, 0, None, out=tp)
+
+    # 緯度行ごとに (NLON, H, V) を組み立てて書き出す。1行あたり約1.4MB。
     with open("/tmp/ecmwf.bin", "wb") as f:
-        f.write(arr.tobytes())
+        for iy in range(NLAT):
+            row = np.empty((NLON, H, V), dtype="<f4")
+            row[:, :, 0] = temp[:, iy, :].T
+            row[:, :, 1] = spd[:, iy, :].T
+            row[:, :, 2] = wdir[:, iy, :].T
+            row[:, :, 3] = tp[:, iy, :].T
+            row[:, :, 4] = cloud[:, iy, :].T
+            row.tofile(f)
 
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
@@ -175,16 +200,6 @@ def main() -> int:
     }
     with open("/tmp/ecmwf_meta.json", "w") as f:
         json.dump(meta, f)
-
-    # ★ 中身が空でも「成功」で終えないこと。fetch_step の失敗は警告にして続行する作りなので、
-    #   全ステップ落ちても配列が NaN のまま処理が最後まで通ってしまう（初回実行で実際に発生）。
-    #   R2 に NaN だらけのファイルを上げると、アプリには列が出るのに値が全部空になる。
-    good = int(np.isfinite(temp).any(axis=(1, 2)).sum())
-    print(f"steps with data: {good}/{H}")
-    if good < H * 0.8:
-        print(f"ERROR: only {good}/{H} steps carry data — refusing to upload",
-              file=sys.stderr)
-        return 1
 
     size = os.path.getsize("/tmp/ecmwf.bin")
     print(f"packed {size/1e6:.0f} MB, cell={H*len(VARS)*4} B")
