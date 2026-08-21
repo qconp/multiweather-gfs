@@ -186,7 +186,7 @@ def main():
         "nLat": NLAT, "nLon": NLON, "res": RES, "fhours": FHOURS, "vars": VARS,
     }
     open("/tmp/gfs_meta.json", "w").write(json.dumps(meta))
-    print(f"built gfs.bin {arr.nbytes} bytes, cycle {meta['cycle']}")
+    print(f"built gfs.bin {os.path.getsize('/tmp/gfs.bin')} bytes, cycle {meta['cycle']}")
 
     s3 = boto3.client(
         "s3",
