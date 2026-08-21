@@ -93,20 +93,29 @@ def fetch_step(date: str, hh: str, step: int) -> dict[str, np.ndarray]:
         name = list(ds.data_vars)[0]
         arr = np.asarray(ds[name].values, dtype=np.float32)
 
-        # ★ 格子の向きを検証する。Worker は iy = round((90 - lat) / res) で引くので、
-        #   緯度が降順（先頭が北極）でなければ南北が反転したまま静かに配信される。
-        #   落ちないぶん見つけにくい種類の事故なので、推測せずここで確かめる。
+        # ★ 軸の向きを揃える。Worker は iy=round((90-lat)/res), ix=round(lon%360/res) で
+        #   引くので、緯度は降順（先頭が北極）、経度は 0 始まりでなければならない。
+        #   ズレていても落ちないため、南北反転や経度半周ズレが静かに配信される。
+        #   実測: 同じファイルでも tp だけ経度が -180..180 で返る（他は 0..360）。
+        #   よって弾かずに正規化する。
         lats = np.asarray(ds["latitude"].values, dtype=np.float64)
         lons = np.asarray(ds["longitude"].values, dtype=np.float64)
         if arr.shape != (721, 1440):
             raise RuntimeError(f"{p}: unexpected grid {arr.shape}, expected (721, 1440)")
-        if lats[0] < lats[-1]:
-            arr = arr[::-1, :]          # 昇順で来たら反転して降順に揃える
+
+        if lats[0] < lats[-1]:                      # 昇順なら反転して降順へ
+            arr = arr[::-1, :]
             lats = lats[::-1]
         if not (89.9 < lats[0] <= 90.0 and -90.0 <= lats[-1] < -89.9):
             raise RuntimeError(f"{p}: latitude runs {lats[0]}..{lats[-1]}, expected 90..-90")
-        if not (-0.01 < lons[0] < 0.01):
-            raise RuntimeError(f"{p}: longitude starts at {lons[0]}, expected 0")
+
+        lons360 = np.mod(lons, 360.0)               # -180..180 も 0..360 も同じ土俵に乗せる
+        order = np.argsort(lons360, kind="stable")
+        arr = arr[:, order]
+        lons360 = lons360[order]
+        if not (-0.01 < lons360[0] < 0.01 and 359.0 < lons360[-1] < 360.0):
+            raise RuntimeError(
+                f"{p}: longitude runs {lons360[0]}..{lons360[-1]} after normalising")
 
         out[p] = arr[::2, ::2]
         ds.close()
@@ -166,6 +175,16 @@ def main() -> int:
     }
     with open("/tmp/ecmwf_meta.json", "w") as f:
         json.dump(meta, f)
+
+    # ★ 中身が空でも「成功」で終えないこと。fetch_step の失敗は警告にして続行する作りなので、
+    #   全ステップ落ちても配列が NaN のまま処理が最後まで通ってしまう（初回実行で実際に発生）。
+    #   R2 に NaN だらけのファイルを上げると、アプリには列が出るのに値が全部空になる。
+    good = int(np.isfinite(temp).any(axis=(1, 2)).sum())
+    print(f"steps with data: {good}/{H}")
+    if good < H * 0.8:
+        print(f"ERROR: only {good}/{H} steps carry data — refusing to upload",
+              file=sys.stderr)
+        return 1
 
     size = os.path.getsize("/tmp/ecmwf.bin")
     print(f"packed {size/1e6:.0f} MB, cell={H*len(VARS)*4} B")
