@@ -135,31 +135,22 @@ def main():
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values
             except Exception:
                 apcp[i] = 0
-            # ★ 未解決の不具合（2026-08-23）。この読み方だと時刻ごとに統計量の違う
-            #   メッセージ（instant / 1時間平均）が混ざり、隣接時刻で 90 ポイント級に跳ねる。
-            #   実測（4地点・各47時間）: GFS 最大隣接差 91〜96 / 40超の急変 2〜8回。
-            #   同条件で ECMWF は 30〜34 / 0回(144h)、NWS は 19〜29 / 0回(181h)。
-            #   東京の 98→5→51 のような並びは空として成立しない。
-            #   → Worker 側で gfs の cloud を null にして表示を止めてある。
-            #   直し方（.idx を実際に読んで確定、2026-08-23）:
-            #     どの時刻にも entire atmosphere の TCDC が2本ある。
-            #       TCDC:entire atmosphere:N hour fcst:        ← 瞬時値
-            #       TCDC:entire atmosphere:0-N hour ave fcst:  ← 0時間目からの「通し」平均
-            #     ★ avg は 1時間平均ではなく 0-N の累積平均で、先へ行くほど平滑化が強くなる
-            #       別物。フォールバック先にしてはいけない（当初 avg でそろえる案を書いたが誤り）。
-            #     瞬時値は f001..f048 のすべてに存在するので、instant のみを使い、
-            #     取れなければ NaN のままにする。avg へのフォールバックは削除すること。
-            #   直したら隣接差を測り、ECMWF 並み（最大30台・40超の急変0）に収まってから
-            #   Worker の cloud を戻す。
             # 全雲量(TCDC, %)。そのまま % で表示に出す(記号の導出はしない)。
-            # GFS の entire-atmosphere TCDC は instant と "0-1 hour ave" の2メッセージがあり、
-            # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)。instant優先・avgフォールバック。
+            #
+            # ★ instant のみを使い、avg には決してフォールバックしないこと（2026-08-23 修正）。
+            #   entire atmosphere の TCDC はどの時刻にも2本ある:
+            #     TCDC:entire atmosphere:N hour fcst:        ← 瞬時値。これを使う
+            #     TCDC:entire atmosphere:0-N hour ave fcst:  ← 0時間目からの「通し」平均
+            #   後者は 1時間平均ではなく 0-N の累積平均で、先へ行くほど平滑化が強くなる別物。
+            #   以前は instant優先・avgフォールバックにしていたため時刻ごとに統計量が入れ替わり、
+            #   隣接時刻で 90ポイント級に跳ねた（東京 98→5→51）。実測で GFS だけ最大隣接差
+            #   91〜96・40超の急変 2〜8回。同条件の ECMWF は 30〜34 / 0回(144h)。
+            #   瞬時値は f001..f048 のすべてに存在するので、取れなければ NaN のままでよい。
             # typeOfLevel 名は eccodes 版差で atmosphere / entireAtmosphere の両方を試す。
+            # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)ので必ず付ける。
             for keys in (
                 {"typeOfLevel": "atmosphere", "shortName": "tcc", "stepType": "instant"},
                 {"typeOfLevel": "entireAtmosphere", "shortName": "tcc", "stepType": "instant"},
-                {"typeOfLevel": "atmosphere", "shortName": "tcc", "stepType": "avg"},
-                {"typeOfLevel": "entireAtmosphere", "shortName": "tcc", "stepType": "avg"},
             ):
                 try:
                     cloud[i] = rd(fh, keys)["tcc"].values
@@ -177,6 +168,22 @@ def main():
 
     # 診断: 雲量が何時間分パースできたか（0 なら TCDC 抽出失敗＝Worker側で晴/曇アイコンが出ない）。
     print(f"cloud parsed for {int(np.isfinite(cloud).any(axis=(1, 2)).sum())}/{H} hours", file=sys.stderr)
+
+    # 雲量の時間方向のなめらかさを測る。統計量の違うメッセージが混ざると隣接時刻で
+    # 90ポイント級に跳ねる（2026-08-23 の不具合）。健全なら 40超の急変はほぼ出ない
+    # （同条件の ECMWF は 0回/144h）。数値を出す前にログで気づけるようにしておく。
+    try:
+        sample = cloud[:, ::120, ::120]                     # 粗く間引いた地点で十分
+        d = np.abs(np.diff(sample, axis=0))
+        d = d[np.isfinite(d)]
+        if d.size:
+            big = float((d > 40).mean())
+            print(f"cloud jump check: max={d.max():.0f} >40 の割合={big:.1%}", file=sys.stderr)
+            if big > 0.05:
+                print("WARNING: 雲量が時間方向に跳ねすぎている。"
+                      "TCDC の stepType が混ざっていないか確認すること", file=sys.stderr)
+    except Exception as e:
+        print(f"cloud jump check skipped: {e}", file=sys.stderr)
 
     # 中身が空でも「成功」で終えない。parse warn は握りつぶして続行する作りなので、
     # 全時刻が落ちても NaN のまま最後まで通ってしまう（ECMWF で実際に起きた）。
