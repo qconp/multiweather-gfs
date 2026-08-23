@@ -5,7 +5,9 @@ GFS -> R2 更新スクリプト（GitHub Actions から6時間ごとに実行）
 NOAA GFS（パブリックドメイン）の最新サイクルを取得し、0.25°を0.5°に間引いて
 コンパクトなバイナリ（レイアウト [iy][ix][h][temp,wind,windDir,precip,cloud] float32）に
 変換、Cloudflare R2（S3互換API）へ gfs.bin / gfs_meta.json としてアップロードする。
-cloud(全雲量%)は Worker 側で天気記号(晴/曇/雨/雪)を導出するために付与する。
+cloud(全雲量%)は表示用。かつては Worker 側で天気記号を導出する入力だったが、
+数値から現象名を作るのは気象業務法 第2条6項の予報にあたるため撤去した
+(10_Planning/ops_weather_service_act.md)。いまは % のまま画面に出している。
 Worker はこのバイナリをセル単位の range read で1回だけ読み、比較モデル "gfs" として返す。
 
 必要な環境変数（GitHub Secrets）:
@@ -133,7 +135,7 @@ def main():
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values
             except Exception:
                 apcp[i] = 0
-            # 全雲量(TCDC, %)。天気記号(晴/曇)の導出に使う。
+            # 全雲量(TCDC, %)。そのまま % で表示に出す(記号の導出はしない)。
             # GFS の entire-atmosphere TCDC は instant と "0-1 hour ave" の2メッセージがあり、
             # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)。instant優先・avgフォールバック。
             # typeOfLevel 名は eccodes 版差で atmosphere / entireAtmosphere の両方を試す。
