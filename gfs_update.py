@@ -141,9 +141,16 @@ def main():
             #   同条件で ECMWF は 30〜34 / 0回(144h)、NWS は 19〜29 / 0回(181h)。
             #   東京の 98→5→51 のような並びは空として成立しない。
             #   → Worker 側で gfs の cloud を null にして表示を止めてある。
-            #   直し方: 全時刻で同じ stepType を使う（instant が全ステップに無いなら avg で
-            #   そろえる）。時刻ごとのフォールバックをやめること。直したら隣接差を測り、
-            #   ECMWF 並みに収まってから Worker の cloud を戻す。
+            #   直し方（.idx を実際に読んで確定、2026-08-23）:
+            #     どの時刻にも entire atmosphere の TCDC が2本ある。
+            #       TCDC:entire atmosphere:N hour fcst:        ← 瞬時値
+            #       TCDC:entire atmosphere:0-N hour ave fcst:  ← 0時間目からの「通し」平均
+            #     ★ avg は 1時間平均ではなく 0-N の累積平均で、先へ行くほど平滑化が強くなる
+            #       別物。フォールバック先にしてはいけない（当初 avg でそろえる案を書いたが誤り）。
+            #     瞬時値は f001..f048 のすべてに存在するので、instant のみを使い、
+            #     取れなければ NaN のままにする。avg へのフォールバックは削除すること。
+            #   直したら隣接差を測り、ECMWF 並み（最大30台・40超の急変0）に収まってから
+            #   Worker の cloud を戻す。
             # 全雲量(TCDC, %)。そのまま % で表示に出す(記号の導出はしない)。
             # GFS の entire-atmosphere TCDC は instant と "0-1 hour ave" の2メッセージがあり、
             # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)。instant優先・avgフォールバック。
