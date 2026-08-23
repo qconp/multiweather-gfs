@@ -135,6 +135,15 @@ def main():
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values
             except Exception:
                 apcp[i] = 0
+            # ★ 未解決の不具合（2026-08-23）。この読み方だと時刻ごとに統計量の違う
+            #   メッセージ（instant / 1時間平均）が混ざり、隣接時刻で 90 ポイント級に跳ねる。
+            #   実測（4地点・各47時間）: GFS 最大隣接差 91〜96 / 40超の急変 2〜8回。
+            #   同条件で ECMWF は 30〜34 / 0回(144h)、NWS は 19〜29 / 0回(181h)。
+            #   東京の 98→5→51 のような並びは空として成立しない。
+            #   → Worker 側で gfs の cloud を null にして表示を止めてある。
+            #   直し方: 全時刻で同じ stepType を使う（instant が全ステップに無いなら avg で
+            #   そろえる）。時刻ごとのフォールバックをやめること。直したら隣接差を測り、
+            #   ECMWF 並みに収まってから Worker の cloud を戻す。
             # 全雲量(TCDC, %)。そのまま % で表示に出す(記号の導出はしない)。
             # GFS の entire-atmosphere TCDC は instant と "0-1 hour ave" の2メッセージがあり、
             # stepType を指定しないと cfgrib が曖昧エラーで落ちる(→全NaN)。instant優先・avgフォールバック。
