@@ -2,10 +2,11 @@ name: ECMWF IFS to R2 (Multi Weather)
 
 # ECMWF IFS open data の最新サイクルを取得し Cloudflare R2 に配信する。
 # ECMWF は 00/06/12/18Z の約7〜9時間後に公開されるので、その後に回す。
+# ★ 00Z の回だけ 08:30 UTC で 429 が続いた（2026-09-15〜17 三日連続）。公開直後の混雑を避けて 09:30 に。
 # 手動実行(workflow_dispatch)も可。
 on:
   schedule:
-    - cron: "30 8,14,20,2 * * *"
+    - cron: "30 9,14,20,2 * * *"
   workflow_dispatch:
 
 jobs:
