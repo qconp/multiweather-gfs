@@ -17,8 +17,11 @@ others) are CC BY-NC-SA. Do not point this script at anything outside
 data.ecmwf.int/forecasts/.../ifs/.
 """
 import json
+import random
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -46,11 +49,25 @@ def step_url(date: str, hh: str, step: int, ext: str) -> str:
 
 
 def http(url: str, rng: tuple[int, int] | None = None) -> bytes:
-    req = urllib.request.Request(url, headers=dict(UA))
-    if rng:
-        req.add_header("Range", f"bytes={rng[0]}-{rng[1]}")
-    with urllib.request.urlopen(req, timeout=180) as r:
-        return r.read()
+    # ★ data.ecmwf.int は混雑時に 429 を返す（08:30 UTC の回で 0/49 になり失敗通知が続いた）。
+    #   429/5xx/通信断は Retry-After（無ければ指数バックオフ＋ゆらぎ）で待って取り直す。
+    for attempt in range(8):
+        req = urllib.request.Request(url, headers=dict(UA))
+        if rng:
+            req.add_header("Range", f"bytes={rng[0]}-{rng[1]}")
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                raise
+            wait = e.headers.get("Retry-After") if e.headers else None
+            delay = float(wait) if wait and wait.isdigit() else min(120, 5 * 2 ** attempt)
+            err = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            delay, err = min(120, 5 * 2 ** attempt), e
+        time.sleep(delay + random.uniform(0, 3))
+    raise err
 
 
 def find_cycle() -> tuple[str, str] | None:
@@ -164,7 +181,7 @@ def main() -> int:
         tp[i] = d["tp"] * 1000.0    # m -> mm（この時点では step0 からの積算）
         cloud[i] = d["tcc"] * 100.0  # 0..1 -> %
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         list(ex.map(one, list(enumerate(STEPS))))
 
     # 中身が空でも「成功」で終えないこと。fetch_step の失敗は警告にして続行する作りなので、
