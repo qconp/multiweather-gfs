@@ -60,3 +60,10 @@ GitHub は**リポジトリに60日 push が無いと、定時実行(schedule)�
 
 失敗しても R2 は前回の内容を保つので配信は途切れない。それでも 09:30 の回が落ち続けるなら、
 さらに遅らせる（10:30）か、失敗時に同じ job を1回だけ再実行する仕組みを足す。
+
+### ICON-EU（2026-09-29 追加）
+`icon_update.py` + `.github/workflows/icon-update.yml`。DWD open data の ICON-EU 主サイクル
+（00/06/12/18Z・+120h、公開まで約 3〜4h）を 04:40/10:40/16:40/22:40 UTC に取り、`icon.bin` /
+`icon_meta.json`（0.125° の地域格子、約 420MB）として同じバケットに置く。初回 2m41s・93/93 ステップ。
+名称・出典の扱いは monorepo の `10_Planning/ops_dwd_trademark_APP278269-B.md` §4.5（DWD の書面）。
+60 日停止の件はこのワークフローにも当てはまる。
