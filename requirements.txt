@@ -4,3 +4,4 @@ cfgrib
 ecmwflibs
 boto3
 scipy
+eccodes
