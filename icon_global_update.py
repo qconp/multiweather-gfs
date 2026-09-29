@@ -16,7 +16,9 @@ Steps:  00/06/12/18Z。+78h まで毎時・以降 3 時間刻み。ここでは 
 ★ 補間しない（運搬だけ）: 値は ICON のセルそのもの。点→セルは 0.1° の索引表
   （icong_idx.bin: uint32 LE、[iy][ix]、iy=round((90-lat)/0.05)、ix=round((lon+180)/0.05)%7200、約 104 MB）で
   最寄りのセル中心を引く（球面上の直線距離の最小）。0.1° だと札幌で 2.5 km のセルを外して 10.4 km の
-  セルを引いた（2026-09-29 実測）ので 0.05°（索引による上乗せは最大約 2.8 km）。
+  セルを引いた（2026-09-29 実測）ので 0.05°。さらに Worker は点を囲む索引 4 点のセルを候補にし、
+  セル中心座標（icong_ll.bin: float32 LE [lat, lon] × NCELL）で大円距離が最小のものを選ぶ
+  （索引 1 点だけだと東京・シドニーで隣のセルを引いた）。
 ★ 容量: セル連続（NCELL, H, V）を float16 LE で保存（約 1.2 GB）。float16 の分解能は 30℃で 0.016、
   降水 64mm 付近で 0.03 と、Worker の 0.1 丸めより細かい。
 単位は GRIB の units を見て、想定外なら止める（AIFS で単位が IFS と違った教訓）。
@@ -144,6 +146,7 @@ def main() -> int:
         if km(c, la, lo) - best > 3:
             raise RuntimeError(f"index self-check failed at {la},{lo}: {km(c, la, lo):.1f} km vs best {best:.1f} km")
     idx.tofile(f"{OUT}/icong_idx.bin")
+    np.stack([clat, clon], axis=1).astype("<f4").tofile(f"{OUT}/icong_ll.bin")
 
     data = np.full((V, H, NCELL), np.nan, np.float32)
 
@@ -188,7 +191,7 @@ def main() -> int:
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "model": "ICON",
         "nCell": NCELL, "dtype": "f2",
-        "idxRes": IDX_RES, "idxNLat": IDX_NLAT, "idxNLon": IDX_NLON, "idxLat0": 90.0, "idxLon0": -180.0,
+        "ll": "icong_ll.bin", "idxRes": IDX_RES, "idxNLat": IDX_NLAT, "idxNLon": IDX_NLON, "idxLat0": 90.0, "idxLon0": -180.0,
         "fhours": STEPS, "vars": VARS,
     }
     with open(f"{OUT}/icong_meta.json", "w") as f:
@@ -208,8 +211,9 @@ def main() -> int:
     # データ → 索引 → メタの順（メタが最後。Worker はメタの cycle/fhours で読む）
     s3.upload_file(f"{OUT}/icong.bin", BUCKET, "icong.bin")
     s3.upload_file(f"{OUT}/icong_idx.bin", BUCKET, "icong_idx.bin")
+    s3.upload_file(f"{OUT}/icong_ll.bin", BUCKET, "icong_ll.bin")
     s3.upload_file(f"{OUT}/icong_meta.json", BUCKET, "icong_meta.json")
-    print("uploaded icong.bin + icong_idx.bin + icong_meta.json")
+    print("uploaded icong.bin + icong_idx.bin + icong_ll.bin + icong_meta.json")
     return 0
 
 
