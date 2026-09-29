@@ -32,6 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
+
+import sparse  # 陸と沿岸 50 km のセルだけを書く（R2 容量対策 2026-09-30）
 import xarray as xr
 
 BASE = "https://opendata.dwd.de/weather/nwp/icon/grib"
@@ -145,8 +147,13 @@ def main() -> int:
         best = float(km(np.arange(NCELL), la, lo).min())
         if km(c, la, lo) - best > 3:
             raise RuntimeError(f"index self-check failed at {la},{lo}: {km(c, la, lo):.1f} km vs best {best:.1f} km")
-    idx.tofile(f"{OUT}/icong_idx.bin")
-    np.stack([clat, clon], axis=1).astype("<f4").tofile(f"{OUT}/icong_ll.bin")
+    # 陸と沿岸のセルだけを詰める。索引は「点→詰めた位置」（外洋のセルは 0xFFFFFFFF）、
+    # セル中心座標も詰めた順（Worker は候補の中から最寄りを選ぶ）。
+    keepc = sparse.keep_at(clat, clon)
+    slot = sparse.slot_index(keepc)
+    slot[idx].astype("<u4").tofile(f"{OUT}/icong_s_idx.bin")
+    np.stack([clat[keepc], clon[keepc]], axis=1).astype("<f4").tofile(f"{OUT}/icong_s_ll.bin")
+    print(f"cells kept: {int(keepc.sum())}/{NCELL}")
 
     data = np.full((V, H, NCELL), np.nan, np.float32)
 
@@ -185,13 +192,14 @@ def main() -> int:
     with open(f"{OUT}/icong.bin", "wb") as f:
         CH = 262144
         for a in range(0, NCELL, CH):
-            f.write(np.ascontiguousarray(data[:, :, a:a + CH].transpose(2, 1, 0)).astype("<f2").tobytes())
+            f.write(np.ascontiguousarray(data[:, :, a:a + CH].transpose(2, 1, 0)[keepc[a:a + CH]]).astype("<f2").tobytes())
 
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "model": "ICON",
         "nCell": NCELL, "dtype": "f2",
-        "ll": "icong_ll.bin", "idxRes": IDX_RES, "idxNLat": IDX_NLAT, "idxNLon": IDX_NLON, "idxLat0": 90.0, "idxLon0": -180.0,
+        "bin": "icong_s.bin", "idx": "icong_s_idx.bin", "ll": "icong_s_ll.bin", "nSlot": int(keepc.sum()),
+        "idxRes": IDX_RES, "idxNLat": IDX_NLAT, "idxNLon": IDX_NLON, "idxLat0": 90.0, "idxLon0": -180.0,
         "fhours": STEPS, "vars": VARS,
     }
     with open(f"{OUT}/icong_meta.json", "w") as f:
@@ -209,11 +217,17 @@ def main() -> int:
         region_name="auto",
     )
     # データ → 索引 → メタの順（メタが最後。Worker はメタの cycle/fhours で読む）
-    s3.upload_file(f"{OUT}/icong.bin", BUCKET, "icong.bin")
-    s3.upload_file(f"{OUT}/icong_idx.bin", BUCKET, "icong_idx.bin")
-    s3.upload_file(f"{OUT}/icong_ll.bin", BUCKET, "icong_ll.bin")
+    # 詰めた版を別名で上げ、最後にメタで切り替え、古い全セル版を消す。
+    s3.upload_file(f"{OUT}/icong.bin", BUCKET, "icong_s.bin")
+    s3.upload_file(f"{OUT}/icong_s_idx.bin", BUCKET, "icong_s_idx.bin")
+    s3.upload_file(f"{OUT}/icong_s_ll.bin", BUCKET, "icong_s_ll.bin")
     s3.upload_file(f"{OUT}/icong_meta.json", BUCKET, "icong_meta.json")
-    print("uploaded icong.bin + icong_idx.bin + icong_ll.bin + icong_meta.json")
+    for old in ("icong.bin", "icong_idx.bin", "icong_ll.bin"):
+        try:
+            s3.delete_object(Bucket=BUCKET, Key=old)
+        except Exception as e:
+            print(f"note: delete {old}: {e}")
+    print("uploaded icong_s.bin + icong_s_idx.bin + icong_s_ll.bin + icong_meta.json")
     return 0
 
 

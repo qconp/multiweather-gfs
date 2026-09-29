@@ -34,6 +34,8 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 import numpy as np
+
+import sparse  # 陸と沿岸 50 km だけを書く（R2 容量対策 2026-09-30）
 import xarray as xr
 
 BASE = "https://data.ecmwf.int/forecasts"
@@ -217,6 +219,8 @@ def main() -> int:
     np.clip(tp, 0, None, out=tp)
 
     # 緯度行ごとに (NLON, H, V) を組み立てて書き出す。1行あたり約1.4MB。
+    KEEP = sparse.keep_regular(NLAT, NLON, RES)
+    sparse.slot_index(KEEP).tofile("/tmp/aifs_s_idx.bin")
     with open("/tmp/aifs.bin", "wb") as f:
         for iy in range(NLAT):
             # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
@@ -226,12 +230,12 @@ def main() -> int:
             row[:, :, 2] = wdir[:, iy, :].T
             row[:, :, 3] = tp[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
-            row.tofile(f)
+            row[KEEP[iy]].tofile(f)
 
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "nLat": NLAT, "nLon": NLON, "res": RES,
-        "dtype": "f2", "fhours": STEPS, "vars": VARS,
+        "dtype": "f2", "bin": "aifs_s.bin", "idx": "aifs_s_idx.bin", "nSlot": int(KEEP.sum()), "fhours": STEPS, "vars": VARS,
     }
     with open("/tmp/aifs_meta.json", "w") as f:
         json.dump(meta, f)
@@ -249,8 +253,7 @@ def main() -> int:
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
     )
-    s3.upload_file("/tmp/aifs.bin", BUCKET, "aifs.bin")
-    s3.upload_file("/tmp/aifs_meta.json", BUCKET, "aifs_meta.json")
+    sparse.publish(s3, BUCKET, "/tmp/aifs.bin", "/tmp/aifs_s_idx.bin", "/tmp/aifs_meta.json", "aifs")
     print("uploaded aifs.bin + aifs_meta.json")
     return 0
 

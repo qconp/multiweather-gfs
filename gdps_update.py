@@ -25,6 +25,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
+
+import sparse  # 陸と沿岸 50 km だけを書く（R2 容量対策 2026-09-30）
 import xarray as xr
 
 RES = 0.15
@@ -152,14 +154,16 @@ def main() -> int:
         tp[i] -= tp[i - 1]
     np.clip(tp, 0, None, out=tp)
 
+    KEEP = sparse.keep_regular(NLAT, NLON, RES)
+    sparse.slot_index(KEEP).tofile(f"{OUT}/gdps_s_idx.bin")
     with open(f"{OUT}/gdps.bin", "wb") as f:
         for iy in range(NLAT):
-            f.write(np.ascontiguousarray(data[:, :, iy, :].transpose(2, 1, 0)).astype("<f2").tobytes())
+            f.write(np.ascontiguousarray(data[:, :, iy, :].transpose(2, 1, 0)[KEEP[iy]]).astype("<f2").tobytes())
 
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "model": "GDPS",
-        "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2",
+        "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2", "bin": "gdps_s.bin", "idx": "gdps_s_idx.bin", "nSlot": int(KEEP.sum()),
         "fhours": STEPS, "vars": VARS,
     }
     with open(f"{OUT}/gdps_meta.json", "w") as f:
@@ -175,8 +179,7 @@ def main() -> int:
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
     )
-    s3.upload_file(f"{OUT}/gdps.bin", BUCKET, "gdps.bin")
-    s3.upload_file(f"{OUT}/gdps_meta.json", BUCKET, "gdps_meta.json")
+    sparse.publish(s3, BUCKET, f"{OUT}/gdps.bin", f"{OUT}/gdps_s_idx.bin", f"{OUT}/gdps_meta.json", "gdps")
     print("uploaded gdps.bin + gdps_meta.json")
     return 0
 

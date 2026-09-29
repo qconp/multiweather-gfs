@@ -17,6 +17,8 @@ import os, sys, time, urllib.request, json
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+
+import sparse  # 陸と沿岸 50 km だけを書く（R2 容量対策 2026-09-30）
 import xarray as xr
 import boto3
 
@@ -209,6 +211,8 @@ def main():
     # 0.25° では stack+transpose が同じ大きさの配列を2本増やし、1GB×3 で CI が落ちる。
     # 出力バイト列は旧方式と一致することをミニチュアで確認済み。
     V = len(VARS)
+    KEEP = sparse.keep_regular(NLAT, NLON, RES)
+    sparse.slot_index(KEEP).tofile("/tmp/gfs_s_idx.bin")
     with open("/tmp/gfs.bin", "wb") as f:
         for iy in range(NLAT):
             # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
@@ -218,10 +222,10 @@ def main():
             row[:, :, 2] = wdir[:, iy, :].T
             row[:, :, 3] = precip[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
-            row.tofile(f)
+            row[KEEP[iy]].tofile(f)
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
-        "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2", "fhours": FHOURS, "vars": VARS,
+        "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2", "bin": "gfs_s.bin", "idx": "gfs_s_idx.bin", "nSlot": int(KEEP.sum()), "fhours": FHOURS, "vars": VARS,
     }
     open("/tmp/gfs_meta.json", "w").write(json.dumps(meta))
     print(f"built gfs.bin {os.path.getsize('/tmp/gfs.bin')} bytes, cycle {meta['cycle']}")
@@ -234,8 +238,7 @@ def main():
         region_name="auto",
     )
     # bin を先に、meta を後に（Worker は meta の cycle を信頼するため整合順）
-    s3.upload_file("/tmp/gfs.bin", BUCKET, "gfs.bin")
-    s3.upload_file("/tmp/gfs_meta.json", BUCKET, "gfs_meta.json")
+    sparse.publish(s3, BUCKET, "/tmp/gfs.bin", "/tmp/gfs_s_idx.bin", "/tmp/gfs_meta.json", "gfs")
     print("uploaded to R2 OK")
 
 
