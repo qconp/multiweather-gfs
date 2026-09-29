@@ -1,0 +1,28 @@
+name: ECMWF AIFS to R2 (Multi Weather)
+
+# ECMWF AIFS Single（機械学習の予報）の最新サイクルを取得し Cloudflare R2 に配信する。
+# IFS と同じ公開元・同じ公開時刻だが、別ジョブにして IFS の出力（ecmwf.*）には触れない。
+# IFS の回（:30）と重ならないよう :55 に回す。手動実行(workflow_dispatch)も可。
+on:
+  schedule:
+    - cron: "55 9,14,20,2 * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 25ステップ（6時間刻み）。IFS より少ないが取得元は同じなので同じだけ取る。
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build AIFS binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python aifs_update.py
