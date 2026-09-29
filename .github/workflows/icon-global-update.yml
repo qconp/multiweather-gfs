@@ -1,0 +1,29 @@
+name: ICON global to R2 (Multi Weather)
+
+# DWD open data の ICON 全球（正二十面体格子・00/06/12/18Z）を 3 時間刻み +120h で取得し
+# Cloudflare R2 に icong.* として配信する。ICON-EU（icon.*）には触れない。
+# 公開まで約 3〜4 時間。ICON-EU の回（:40）と重ならないよう :10 に回す。手動実行も可。
+# 名称・出典の扱いは monorepo の 10_Planning/ops_dwd_trademark_APP278269-B.md §4.5。
+on:
+  schedule:
+    - cron: "10 5,11,17,23 * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 41ステップ×5変数（bz2 で各 ~1.5MB）+ 格子座標。float16 で約 1.2GB に詰めて上げる。
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build ICON global binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python icon_global_update.py
