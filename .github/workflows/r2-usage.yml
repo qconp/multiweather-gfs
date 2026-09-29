@@ -1,5 +1,8 @@
 name: R2 usage (read-only)
+# 週 1 回（月曜 00:00 UTC）全バケットの容量を数え、9GB を超えたら失敗＝通知メール。読むだけ。
 on:
+  schedule:
+    - cron: "0 0 * * 1"
   workflow_dispatch:
 jobs:
   usage:

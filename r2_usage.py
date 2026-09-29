@@ -20,3 +20,7 @@ for b in buckets:
     for s, k in sorted(top, reverse=True)[:15]:
         print(f"   {s/1e6:9.0f} MB  {k}")
 print(f"TOTAL {total/1e9:.2f} GB (free tier 10 GB-month)")
+LIMIT = float(os.environ.get("ALERT_GB", "9"))
+if total / 1e9 > LIMIT:
+    # 失敗させて GitHub の失敗通知メールで気づく（固定費ゼロの監視）。
+    raise SystemExit(f"R2 usage {total/1e9:.2f} GB exceeds {LIMIT} GB — free tier is 10 GB")

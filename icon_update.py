@@ -148,7 +148,8 @@ def main() -> int:
 
     with open("/tmp/icon.bin", "wb") as f:
         for iy in range(NLAT):
-            row = np.empty((NLON, H, V), dtype="<f4")
+            # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
+            row = np.empty((NLON, H, V), dtype="<f2")
             row[:, :, 0] = temp[:, iy, :].T
             row[:, :, 1] = spd[:, iy, :].T
             row[:, :, 2] = wdir[:, iy, :].T
@@ -160,7 +161,7 @@ def main() -> int:
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "model": "ICON-EU",
         "nLat": NLAT, "nLon": NLON, "res": RES, "lat0": LAT0, "lon0": LON0,
-        "fhours": STEPS, "vars": VARS,
+        "dtype": "f2", "fhours": STEPS, "vars": VARS,
     }
     with open("/tmp/icon_meta.json", "w") as f:
         json.dump(meta, f)

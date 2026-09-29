@@ -211,7 +211,8 @@ def main():
     V = len(VARS)
     with open("/tmp/gfs.bin", "wb") as f:
         for iy in range(NLAT):
-            row = np.empty((NLON, H, V), dtype="<f4")
+            # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
+            row = np.empty((NLON, H, V), dtype="<f2")
             row[:, :, 0] = temp[:, iy, :].T
             row[:, :, 1] = spd[:, iy, :].T
             row[:, :, 2] = wdir[:, iy, :].T
@@ -220,7 +221,7 @@ def main():
             row.tofile(f)
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
-        "nLat": NLAT, "nLon": NLON, "res": RES, "fhours": FHOURS, "vars": VARS,
+        "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2", "fhours": FHOURS, "vars": VARS,
     }
     open("/tmp/gfs_meta.json", "w").write(json.dumps(meta))
     print(f"built gfs.bin {os.path.getsize('/tmp/gfs.bin')} bytes, cycle {meta['cycle']}")

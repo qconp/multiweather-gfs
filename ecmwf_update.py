@@ -202,7 +202,8 @@ def main() -> int:
     # 緯度行ごとに (NLON, H, V) を組み立てて書き出す。1行あたり約1.4MB。
     with open("/tmp/ecmwf.bin", "wb") as f:
         for iy in range(NLAT):
-            row = np.empty((NLON, H, V), dtype="<f4")
+            # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
+            row = np.empty((NLON, H, V), dtype="<f2")
             row[:, :, 0] = temp[:, iy, :].T
             row[:, :, 1] = spd[:, iy, :].T
             row[:, :, 2] = wdir[:, iy, :].T
@@ -213,7 +214,7 @@ def main() -> int:
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "nLat": NLAT, "nLon": NLON, "res": RES,
-        "fhours": STEPS, "vars": VARS,
+        "dtype": "f2", "fhours": STEPS, "vars": VARS,
     }
     with open("/tmp/ecmwf_meta.json", "w") as f:
         json.dump(meta, f)
