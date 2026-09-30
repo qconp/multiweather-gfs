@@ -78,22 +78,37 @@ def http(url: str, rng: tuple[int, int] | None = None) -> bytes:
     raise err
 
 
+def _published(url: str) -> bool:
+    """HEAD で公開済みかを見る。404 だけが「未公開」。429/5xx/通信断は待って聞き直す
+    （2026-09-30: 429 を未公開と取り違えて 2 日前の回まで遡り、Worker が古すぎて AIFS 列が消えた）。"""
+    for attempt in range(6):
+        try:
+            req = urllib.request.Request(url, headers=dict(UA), method="HEAD")
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status == 200
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+        except Exception:
+            pass
+        time.sleep(min(60, 5 * 2 ** attempt) + random.uniform(0, 3))
+    raise RuntimeError(f"cannot tell whether published: {url}")
+
+
 def find_cycle() -> tuple[str, str] | None:
     """Newest cycle whose LAST step is published. Publication lags the run by ~7-9h."""
     now = datetime.now(timezone.utc)
     for back in range(0, 30):
         t = now - timedelta(hours=6 * back)
         date, hh = t.strftime("%Y%m%d"), f"{(t.hour // 6) * 6:02d}"
-        try:
-            req = urllib.request.Request(
-                step_url(date, hh, STEPS[-1], "index"), headers=dict(UA), method="HEAD")
-            with urllib.request.urlopen(req, timeout=30) as r:
-                if r.status == 200:
-                    return date, hh
-        except Exception:
-            continue
+        if _published(step_url(date, hh, STEPS[-1], "index")):
+            # ★ 古すぎる回は上げない（Worker は 36h で捨てるので、上げても列が消えるだけ）。失敗させて通知で気づく。
+            age = (now - datetime.strptime(date + hh, "%Y%m%d%H").replace(tzinfo=timezone.utc)).total_seconds() / 3600
+            if age > 30:
+                print(f"ERROR: newest published cycle {date} {hh}Z is {age:.0f}h old — refusing to upload", file=sys.stderr)
+                return None
+            return date, hh
     return None
-
 
 def fetch_step(date: str, hh: str, step: int) -> dict[str, np.ndarray]:
     """Pull only the messages we need, using the .index byte offsets."""
