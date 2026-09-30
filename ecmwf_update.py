@@ -40,8 +40,12 @@ BASE = "https://data.ecmwf.int/forecasts"
 RES = 0.25
 NLAT, NLON = 721, 1440
 STEPS = list(range(0, 145, 3))  # ECMWF oper は 3 時間刻み。+144h まで
-VARS = ["temp", "wind", "windDir", "precip", "cloud"]
-PARAMS = ["2t", "10u", "10v", "tp", "tcc"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
+PARAMS = ["2t", "10u", "10v", "tp", "tcc", "ptype"]
+# ★ wx = ECMWF 自身が配る降水の種類 ptype（WMO Code table 4.201・瞬時値）。こちらで数値から天気を
+#   作らない（気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。コードをそのまま運ぶ。
+#   0=なし 1=雨 3=着氷性の雨 5=雪 6=湿った雪 7=雨と雪 8=凍雨(ice pellets) 12=着氷性の霧雨。
+OPTIONAL = {"ptype"}  # 無い時刻があっても他の項目の取り込みは落とさない（NaN のまま）
 BUCKET = os.environ.get("R2_BUCKET", "multiweather-gfs")  # 既存バケットに ecmwf.* を同居
 UA = {"User-Agent": "multi-weather/1.0 (+https://qconp.com)"}
 
@@ -115,7 +119,7 @@ def fetch_step(date: str, hh: str, step: int) -> dict[str, np.ndarray]:
         p = j.get("param")
         if p in PARAMS and p not in wanted:
             wanted[p] = (int(j["_offset"]), int(j["_length"]))
-    missing = [p for p in PARAMS if p not in wanted]
+    missing = [p for p in PARAMS if p not in wanted and p not in OPTIONAL]
     if missing:
         raise RuntimeError(f"step {step}: index missing {missing}")
 
@@ -183,6 +187,7 @@ def main() -> int:
     wdir = np.full(shape, np.nan, np.float32)
     tp = np.full(shape, np.nan, np.float32)
     cloud = np.full(shape, np.nan, np.float32)
+    wx = np.full(shape, np.nan, np.float32)
 
     def one(i_step):
         i, step = i_step
@@ -197,6 +202,8 @@ def main() -> int:
         wdir[i] = np.degrees(np.arctan2(-u, -v)) % 360
         tp[i] = d["tp"] * 1000.0    # m -> mm（この時点では step0 からの積算）
         cloud[i] = d["tcc"] * 100.0  # 0..1 -> %
+        if "ptype" in d:
+            wx[i] = d["ptype"]         # コードのまま
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         list(ex.map(one, list(enumerate(STEPS))))
@@ -228,6 +235,7 @@ def main() -> int:
             row[:, :, 2] = wdir[:, iy, :].T
             row[:, :, 3] = tp[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
+            row[:, :, 5] = wx[:, iy, :].T
             row[KEEP[iy]].tofile(f)
 
     meta = {

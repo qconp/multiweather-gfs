@@ -32,7 +32,12 @@ import xarray as xr
 RES = 0.15
 NLAT, NLON = 1201, 2400
 STEPS = list(range(0, 121, 3))[: int(os.environ.get("STEPS_LIMIT", "999"))]
-VARS = ["temp", "wind", "windDir", "precip", "cloud"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
+# ★ wx = ECCC 自身が配る降水の種類（PrecipType-Instant・瞬時値）。こちらで数値から天気を作らない
+#   （気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。コードをそのまま運ぶ。
+#   ECCC の番号（GRIB は Code table 4.201 を名乗るが番号の意味は ECCC 独自。公式の変数表
+#   https://eccc-msc.github.io/open-data/assets/csv/GDPS_Variables-List_en.csv）:
+#   1=雨 2=雨と雪 3=着氷性の雨 4=凍雨(ice pellets) 5=雪 6=なし 7=霧雨 8=着氷性の霧雨 9=着氷性の雨と凍雨
 # 変数名 → (ファイルの Var, 期待する units か WMO 番号 (discipline, category, number))
 PARAMS = {
     "temp": ("AirTemp_AGL-2m", "K"),
@@ -40,6 +45,7 @@ PARAMS = {
     "windDir": ("WindDir_AGL-10m", "Degree true"),
     "precip": ("Precip-Accum_Sfc", (0, 1, 8)),
     "cloud": ("TotalCloudCover_Sfc", (0, 6, 1)),
+    "wx": ("PrecipType-Instant_Sfc", (0, 1, 19)),
 }
 BUCKET = os.environ.get("R2_BUCKET", "multiweather-gfs")  # gdps.* として同居
 OUT = os.environ.get("OUT_DIR", "/tmp")
@@ -132,6 +138,12 @@ def main() -> int:
         try:
             for k, key in enumerate(VARS):
                 # 初期時刻（step 0）の積算降水ファイルは配布されない（積算 0）。
+                if key == "wx":
+                    try:
+                        data[k, i] = fetch(date, hh, step, key)
+                    except Exception as e:  # 無い時刻は NaN（他の項目は落とさない）
+                        print(f"note step {step} wx: {e}", file=sys.stderr)
+                    continue
                 data[k, i] = 0.0 if (step == 0 and key == "precip") else fetch(date, hh, step, key)
         except Exception as e:
             print(f"warn step {step}: {e}", file=sys.stderr)

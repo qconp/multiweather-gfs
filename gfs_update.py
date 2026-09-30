@@ -29,7 +29,10 @@ import boto3
 RES = 0.25
 NLAT, NLON = 721, 1440
 FHOURS = list(range(1, 49))          # f001..f048（1時間刻み・48h）
-VARS = ["temp", "wind", "windDir", "precip", "cloud"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
+# ★ wx = GFS 自身が配る降水の種類の判定フラグ（CRAIN/CSNOW/CFRZR/CICEP・瞬時値・各 0/1）を
+#   ビットの和にしてそのまま運ぶ: 雨=1 雪=2 着氷性の雨=4 凍雨(ice pellets)=8、0=降水なし。
+#   こちらで数値から天気を作らない（気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。
 BUCKET = "multiweather-gfs"
 
 # NOMADS の filter CGI は混雑時に接続を掴んだまま応答しないことがある。タイムアウト無しで
@@ -47,6 +50,7 @@ def url(date, hh, fh):
         f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?"
         f"dir=%2Fgfs.{date}%2F{hh}%2Fatmos&file=gfs.t{hh}z.pgrb2.0p25.f{fh:03d}"
         f"&var_TMP=on&var_UGRD=on&var_VGRD=on&var_APCP=on&var_TCDC=on"
+        f"&var_CRAIN=on&var_CSNOW=on&var_CFRZR=on&var_CICEP=on"
         f"&lev_2_m_above_ground=on&lev_10_m_above_ground=on&lev_surface=on"
         f"&lev_entire_atmosphere=on"
         f"&lev_entire_atmosphere_%28considered_as_a_single_layer%29=on"
@@ -126,6 +130,7 @@ def main():
     wdir = np.full_like(temp, np.nan)
     apcp = np.zeros((H, NLAT, NLON), np.float32)
     cloud = np.full_like(temp, np.nan)
+    wx = np.full_like(temp, np.nan)
     for i, fh in enumerate(FHOURS):
         try:
             temp[i] = (rd(fh, {"typeOfLevel": "heightAboveGround", "level": 2, "shortName": "2t"})["t2m"].values - 273.15)
@@ -133,6 +138,14 @@ def main():
             v = rd(fh, {"typeOfLevel": "heightAboveGround", "level": 10, "shortName": "10v"})["v10"].values
             spd[i] = np.sqrt(u * u + v * v)
             wdir[i] = np.degrees(np.arctan2(-u, -v)) % 360
+            try:  # 降水の種類の判定フラグ（瞬時値）。無ければ NaN（他の項目は落とさない）
+                bits = np.zeros_like(temp[i])
+                for sn, b in (("crain", 1), ("csnow", 2), ("cfrzr", 4), ("cicep", 8)):
+                    ds_ = rd(fh, {"typeOfLevel": "surface", "stepType": "instant", "shortName": sn})
+                    bits += b * (np.asarray(ds_[list(ds_.data_vars)[0]].values) >= 0.5)
+                wx[i] = bits
+            except Exception as e:
+                print(f"note f{fh} ptype flags: {e}", file=sys.stderr)
             try:
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values
             except Exception:
@@ -222,6 +235,7 @@ def main():
             row[:, :, 2] = wdir[:, iy, :].T
             row[:, :, 3] = precip[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
+            row[:, :, 5] = wx[:, iy, :].T
             row[KEEP[iy]].tofile(f)
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",

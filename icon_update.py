@@ -41,8 +41,11 @@ RES = SRC_RES * SUB
 NLAT = (SRC_NLAT + SUB - 1) // SUB  # 329
 NLON = (SRC_NLON + SUB - 1) // SUB  # 689
 STEPS = list(range(0, 79)) + list(range(81, 121, 3))  # 93 steps
-VARS = ["temp", "wind", "windDir", "precip", "cloud"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
 PARAMS = {"2t": "T_2M", "10u": "U_10M", "10v": "V_10M", "tp": "TOT_PREC", "tcc": "CLCT"}
+# ★ wx = DWD 自身が配る天気コード WW（"Numeric instant weather interpretation (WMO)"・瞬時値）。
+#   こちらで数値から天気を作らない（気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。
+#   値は WMO の天気コード（0-3 雲の状態、45/48 霧、51-57 霧雨、61-67 雨、71-77 雪、80-86 しゅう雨・しゅう雪、95-99 雷）。
 BUCKET = os.environ.get("R2_BUCKET", "multiweather-gfs")  # shares the bucket as icon.*
 UA = {"User-Agent": "multi-weather/1.0 (+https://qconp.com)"}
 
@@ -115,6 +118,7 @@ def main() -> int:
     wdir = np.full(shape, np.nan, np.float32)
     tp = np.full(shape, np.nan, np.float32)
     cloud = np.full(shape, np.nan, np.float32)
+    wx = np.full(shape, np.nan, np.float32)
 
     def one(i_step):
         i, step = i_step
@@ -129,6 +133,10 @@ def main() -> int:
         wdir[i] = np.degrees(np.arctan2(-u, -v)) % 360
         tp[i] = d["tp"]           # kg/m2 == mm, accumulated since step 0
         cloud[i] = d["tcc"]       # already %
+        try:
+            wx[i] = fetch_field(date, hh, step, "WW")  # 無い時刻は NaN（他の項目は落とさない）
+        except Exception as e:
+            print(f"note step {step} WW: {e}", file=sys.stderr)
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         list(ex.map(one, list(enumerate(STEPS))))
@@ -155,6 +163,7 @@ def main() -> int:
             row[:, :, 2] = wdir[:, iy, :].T
             row[:, :, 3] = tp[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
+            row[:, :, 5] = wx[:, iy, :].T
             row.tofile(f)
 
     meta = {

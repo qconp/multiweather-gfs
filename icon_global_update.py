@@ -39,10 +39,13 @@ import xarray as xr
 BASE = "https://opendata.dwd.de/weather/nwp/icon/grib"
 NCELL = 2949120
 STEPS = list(range(0, 121, 3))[: int(os.environ.get("STEPS_LIMIT", "999"))]  # 41 steps
-VARS = ["temp", "wind", "windDir", "precip", "cloud"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
 PARAMS = {"2t": "T_2M", "10u": "U_10M", "10v": "V_10M", "tp": "TOT_PREC", "tcc": "CLCT"}
+# ★ wx = DWD 自身が配る天気コード WW（"Numeric instant weather interpretation (WMO)"・瞬時値）。
+#   こちらで数値から天気を作らない（気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。
+#   値は WMO の天気コード（0-3 雲の状態、45/48 霧、51-57 霧雨、61-67 雨、71-77 雪、80-86 しゅう雨・しゅう雪、95-99 雷）。
 UNITS = {"T_2M": ("K",), "U_10M": ("m s**-1",), "V_10M": ("m s**-1",),
-         "TOT_PREC": ("kg m**-2",), "CLCT": ("%",), "CLAT": ("Degree N",), "CLON": ("Degree E",)}
+         "TOT_PREC": ("kg m**-2",), "CLCT": ("%",), "WW": ("Numeric",), "CLAT": ("Degree N",), "CLON": ("Degree E",)}
 IDX_RES, IDX_NLAT, IDX_NLON = 0.05, 3601, 7200
 BUCKET = os.environ.get("R2_BUCKET", "multiweather-gfs")  # icong.* として同居
 OUT = os.environ.get("OUT_DIR", "/tmp")
@@ -170,6 +173,10 @@ def main() -> int:
         data[2, i] = np.degrees(np.arctan2(-u, -v)) % 360
         data[3, i] = d["tp"]          # kg/m2 == mm、初期時刻からの積算
         data[4, i] = d["tcc"]         # %
+        try:
+            data[5, i] = read_grib(http(file_url(date, hh, step, "WW")), str(step), "WW")
+        except Exception as e:
+            print(f"note step {step} WW: {e}", file=sys.stderr)
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         list(ex.map(one, list(enumerate(STEPS))))
