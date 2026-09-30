@@ -109,6 +109,12 @@ def main() -> int:
         print("ERROR: no ICON-EU main cycle available", file=sys.stderr)
         return 1
     date, hh = cyc
+    # ★ 古すぎる回は上げない（Worker は 30〜36h で捨てるので、上げても列が消えるだけ）。
+    #   探索中のエラーで古い回まで遡ることがある（2026-09-30 AIFS が 2 日前の回を上げた）。失敗させて通知で気づく。
+    _age = (datetime.now(timezone.utc) - datetime.strptime(date + hh, "%Y%m%d%H").replace(tzinfo=timezone.utc)).total_seconds() / 3600
+    if _age > 30:
+        print(f"ERROR: newest cycle found {date} {hh}Z is {_age:.0f}h old — refusing to upload", file=sys.stderr)
+        return 1
     print(f"cycle: {date} {hh}Z, {len(STEPS)} steps, grid {NLAT}x{NLON} @ {RES} deg")
 
     H, V = len(STEPS), len(VARS)
