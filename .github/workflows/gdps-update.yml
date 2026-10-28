@@ -5,7 +5,7 @@ name: GDPS to R2 (Multi Weather)
 # 手動実行(workflow_dispatch)も可。
 on:
   schedule:
-    - cron: "25 5,17 * * *"
+    - cron: "25 17 * * *"
   workflow_dispatch:
 
 jobs:
