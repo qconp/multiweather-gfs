@@ -19,8 +19,10 @@ for b in buckets:
     print(f"{b}: {sz/1e9:.2f} GB, {n} objects")
     for s, k in sorted(top, reverse=True)[:15]:
         print(f"   {s/1e6:9.0f} MB  {k}")
-print(f"TOTAL {total/1e9:.2f} GB (free tier 10 GB-month)")
+print(f"TOTAL {total/1e9:.2f} GB")
+# R2 は有料プラン（2026-10）。閾値は「想定外の増え方」に気づくためのもの。
+# 2026-10-30 の高解像度化（ICON-EU 原解像度・ICON-D2・GFS 突風/視程）後の見込みは multiweather-gfs だけで約 3.0 GB。
 LIMIT = float(os.environ.get("ALERT_GB", "9"))
 if total / 1e9 > LIMIT:
     # 失敗させて GitHub の失敗通知メールで気づく（固定費ゼロの監視）。
-    raise SystemExit(f"R2 usage {total/1e9:.2f} GB exceeds {LIMIT} GB — free tier is 10 GB")
+    raise SystemExit(f"R2 usage {total/1e9:.2f} GB exceeds {LIMIT} GB — check for unbounded growth")

@@ -4,7 +4,7 @@ name: GFS to R2 (Multi Weather)
 # GFS サイクル(00/06/12/18Z)の約5h後に実行。手動実行(workflow_dispatch)も可。
 on:
   schedule:
-    - cron: "0 5,17 * * *"
+    - cron: "0 5,11,17,23 * * *"  # 全サイクル（2026-10-30 オーナー承認・公開リポジトリで Actions 無制限）
   workflow_dispatch:
 
 permissions:

@@ -5,7 +5,7 @@ name: ECMWF AIFS to R2 (Multi Weather)
 # IFS の回（:30）と重ならないよう :55 に回す。手動実行(workflow_dispatch)も可。
 on:
   schedule:
-    - cron: "55 9,20 * * *"
+    - cron: "55 3,9,15,21 * * *"  # 全サイクル（2026-10-30 オーナー承認・公開リポジトリで Actions 無制限）
   workflow_dispatch:
 
 permissions:

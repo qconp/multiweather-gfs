@@ -39,7 +39,12 @@ BASE = "https://data.ecmwf.int/forecasts"
 #   主要用途である以上、沿岸で潰れるのは実害。容量は増えるがセル読み出しは変わらない。
 RES = 0.25
 NLAT, NLON = 721, 1440
-STEPS = list(range(0, 145, 3))  # ECMWF oper は 3 時間刻み。+144h まで
+STEPS = list(range(0, 145, 3))  # ECMWF oper は 3 時間刻み。+144h まで（00/12Z）
+# ★ 06/18Z の回は open data では +90h まで（2026-10-30 確認: 06z/ifs/0p25/oper/...-90h-oper-fc.index）。
+#   全サイクル化（オーナー承認 2026-10-30）で 06/18Z も取る。その回は +90h までになる（Worker は meta.fhours で読む）。
+STEPS_SHORT = list(range(0, 91, 3))
+LOCAL = sparse.local_dir()  # --local DIR: R2 に上げず DIR に書く（手元の検証用）
+OUT = LOCAL or "/tmp"
 VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
 PARAMS = ["2t", "10u", "10v", "tp", "tcc", "ptype"]
 # ★ wx = ECMWF 自身が配る降水の種類 ptype（WMO Code table 4.201・瞬時値）。こちらで数値から天気を
@@ -93,13 +98,17 @@ def _published(url: str) -> bool:
     raise RuntimeError(f"cannot tell whether published: {url}")
 
 
+def steps_for(hh: str) -> list[int]:
+    return STEPS if hh in ("00", "12") else STEPS_SHORT
+
+
 def find_cycle() -> tuple[str, str] | None:
-    """Newest cycle whose LAST step is published. Publication lags the run by ~7-9h."""
+    """Newest cycle whose LAST step is published. Publication lags the run by ~7-9h (06/18Z: ~6h)."""
     now = datetime.now(timezone.utc)
     for back in range(0, 30):
         t = now - timedelta(hours=6 * back)
         date, hh = t.strftime("%Y%m%d"), f"{(t.hour // 6) * 6:02d}"
-        if _published(step_url(date, hh, STEPS[-1], "index")):
+        if _published(step_url(date, hh, steps_for(hh)[-1], "index")):
             # ★ 古すぎる回は上げない（Worker は 36h で捨てるので、上げても列が消えるだけ）。失敗させて通知で気づく。
             age = (now - datetime.strptime(date + hh, "%Y%m%d%H").replace(tzinfo=timezone.utc)).total_seconds() / 3600
             if age > 30:
@@ -127,7 +136,7 @@ def fetch_step(date: str, hh: str, step: int) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
     for p, (off, ln) in wanted.items():
         blob = http(grib_url, (off, off + ln - 1))
-        path = f"/tmp/e_{step:03d}_{p}.grib2"
+        path = f"{OUT}/e_{step:03d}_{p}.grib2"
         with open(path, "wb") as f:
             f.write(blob)
         ds = xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
@@ -171,6 +180,7 @@ def main() -> int:
         print("ERROR: no ECMWF cycle available", file=sys.stderr)
         return 1
     date, hh = cyc
+    STEPS = steps_for(hh)
     print(f"cycle: {date} {hh}Z, {len(STEPS)} steps")
 
     H, V = len(STEPS), len(VARS)
@@ -225,8 +235,8 @@ def main() -> int:
 
     # 緯度行ごとに (NLON, H, V) を組み立てて書き出す。1行あたり約1.4MB。
     KEEP = sparse.keep_regular(NLAT, NLON, RES)
-    sparse.slot_index(KEEP).tofile("/tmp/ecmwf_s_idx.bin")
-    with open("/tmp/ecmwf.bin", "wb") as f:
+    sparse.slot_index(KEEP).tofile(f"{OUT}/ecmwf_s_idx.bin")
+    with open(f"{OUT}/ecmwf.bin", "wb") as f:
         for iy in range(NLAT):
             # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
             row = np.empty((NLON, H, V), dtype="<f2")
@@ -243,12 +253,15 @@ def main() -> int:
         "nLat": NLAT, "nLon": NLON, "res": RES,
         "dtype": "f2", "bin": "ecmwf_s.bin", "idx": "ecmwf_s_idx.bin", "nSlot": int(KEEP.sum()), "fhours": STEPS, "vars": VARS,
     }
-    with open("/tmp/ecmwf_meta.json", "w") as f:
+    with open(f"{OUT}/ecmwf_meta.json", "w") as f:
         json.dump(meta, f)
 
-    size = os.path.getsize("/tmp/ecmwf.bin")
+    size = os.path.getsize(f"{OUT}/ecmwf.bin")
     print(f"packed {size/1e6:.0f} MB, cell={H*len(VARS)*4} B")
 
+    if LOCAL:
+        print(f"--local: wrote {OUT}/ecmwf.bin, ecmwf_s_idx.bin, ecmwf_meta.json (not uploaded)")
+        return 0
     s3 = boto3.client(
         "s3",
         endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
@@ -256,7 +269,7 @@ def main() -> int:
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
     )
-    sparse.publish(s3, BUCKET, "/tmp/ecmwf.bin", "/tmp/ecmwf_s_idx.bin", "/tmp/ecmwf_meta.json", "ecmwf")
+    sparse.publish(s3, BUCKET, f"{OUT}/ecmwf.bin", f"{OUT}/ecmwf_s_idx.bin", f"{OUT}/ecmwf_meta.json", "ecmwf")
     print("uploaded ecmwf.bin + ecmwf_meta.json")
     return 0
 

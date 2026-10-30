@@ -67,3 +67,13 @@ GitHub は**リポジトリに60日 push が無いと、定時実行(schedule)�
 `icon_meta.json`（0.125° の地域格子、約 420MB）として同じバケットに置く。初回 2m41s・93/93 ステップ。
 名称・出典の扱いは monorepo の `10_Planning/ops_dwd_trademark_APP278269-B.md` §4.5（DWD の書面）。
 60 日停止の件はこのワークフローにも当てはまる。
+
+### 高解像度化（2026-10-30 オーナー承認・monorepo 10_Planning/multi_weather_highres_proposal_2026-10-30.md §4）
+- ICON-EU: 間引きをやめて原解像度 0.0625°。陸と沿岸 50 km だけ詰めた `icon_s.bin` / `icon_s_idx.bin`（旧 `icon.bin` は publish 時に消える）。
+  変数に `gust`（VMAX_10M）を追加。1日4回（04:40/10:40/16:40/22:40 UTC）。
+- ICON-D2: `python icon_update.py --model d2` + `.github/workflows/icon-d2-update.yml`。0.02°・+48h・3時間ごと（各回の 2h15m 後）。
+  内側の矩形（緯度 44.5–56.5・経度 0.5–17.0。Worker の `ICON_D2_DOMAIN` と同じ）だけ。`icond2_s.bin` / `icond2_s_idx.bin` / `icond2_meta.json`。
+- GFS: `gust`（GUST surface）・`vis`（VIS surface）を追加（8変数）。1日4回。
+- ECMWF IFS / AIFS: 1日4回。IFS の 06/18Z は open data が +90h までなので、その回は ECMWF 列が +90h になる。
+- 手元の検証: どのスクリプトも `--local DIR` で R2 に上げず DIR に書く（gfs / ecmwf / icon）。
+- 容量（2026-10-30 手元実行の実測）: icon_s.bin 839 MB・icond2_s.bin 302 MB・gfs_s.bin 354 MB・ecmwf 06/18Z 回 172 MB（00/12Z 回は従来どおり約 270 MB）。

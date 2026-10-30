@@ -1,0 +1,31 @@
+name: ICON-D2 to R2 (Multi Weather)
+
+# DWD open data の ICON-D2（3 時間ごと 00..21Z・+48h・0.02°）を取得し Cloudflare R2 に配信する。
+# 公開まで約 2 時間なので、各回の 2h15m 後に回す。手動実行(workflow_dispatch)も可。
+# 名称・出典の扱いは monorepo の 10_Planning/ops_dwd_trademark_APP278269-B.md §4.5（DWD の書面）。
+on:
+  schedule:
+    - cron: "15 2-23/3 * * *"  # 00Z→02:15 … 21Z→23:15（2026-10-30 追加）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 49ステップ×7変数（bz2 で各 ~1MB）を取得し、ドイツ周辺の内側の矩形の陸と沿岸だけ詰めて上げる。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build ICON-D2 binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python icon_update.py --model d2

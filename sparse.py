@@ -47,3 +47,17 @@ def publish(s3, bucket, local_bin, local_idx, local_meta, name):
         s3.delete_object(Bucket=bucket, Key=f"{name}.bin")
     except Exception as e:  # 無ければそれでよい
         print(f"note: delete {name}.bin: {e}")
+
+
+def local_dir(argv=None):
+    """`--local DIR` を渡すと R2 に上げず DIR に書き出す（手元での検証用・2026-10-30）。無ければ None。"""
+    import sys
+    a = list(sys.argv[1:] if argv is None else argv)
+    if "--local" in a:
+        i = a.index("--local")
+        if i + 1 >= len(a):
+            raise SystemExit("--local needs a directory")
+        d = a[i + 1]
+        os.makedirs(d, exist_ok=True)
+        return d
+    return None

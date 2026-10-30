@@ -29,11 +29,15 @@ import boto3
 RES = 0.25
 NLAT, NLON = 721, 1440
 FHOURS = list(range(1, 49))          # f001..f048（1時間刻み・48h）
-VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx"]
+VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx", "gust", "vis"]
+# ★ gust = GFS 自身の地上の突風 GUST（m/s・瞬時値）、vis = 地上の視程 VIS（m・瞬時値）。そのまま運ぶ
+#   （2026-10-30 オーナー承認。アプリの「風速・突風」「視程」パネルに出る）。
 # ★ wx = GFS 自身が配る降水の種類の判定フラグ（CRAIN/CSNOW/CFRZR/CICEP・瞬時値・各 0/1）を
 #   ビットの和にしてそのまま運ぶ: 雨=1 雪=2 着氷性の雨=4 凍雨(ice pellets)=8、0=降水なし。
 #   こちらで数値から天気を作らない（気象業務法・2026-10-01 決定、10_Planning/ops_weather_service_act.md）。
 BUCKET = "multiweather-gfs"
+LOCAL = sparse.local_dir()  # --local DIR: R2 に上げず DIR に書く（手元の検証用）
+OUT = LOCAL or "/tmp"
 
 # NOMADS の filter CGI は混雑時に接続を掴んだまま応答しないことがある。タイムアウト無しで
 # 掴むと1本のハングが8並列の枠を潰し、ジョブが25分の上限で cancel される（2026-08-06 実際に発生）。
@@ -50,7 +54,7 @@ def url(date, hh, fh):
         f"https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?"
         f"dir=%2Fgfs.{date}%2F{hh}%2Fatmos&file=gfs.t{hh}z.pgrb2.0p25.f{fh:03d}"
         f"&var_TMP=on&var_UGRD=on&var_VGRD=on&var_APCP=on&var_TCDC=on"
-        f"&var_CRAIN=on&var_CSNOW=on&var_CFRZR=on&var_CICEP=on"
+        f"&var_CRAIN=on&var_CSNOW=on&var_CFRZR=on&var_CICEP=on&var_GUST=on&var_VIS=on"
         f"&lev_2_m_above_ground=on&lev_10_m_above_ground=on&lev_surface=on"
         f"&lev_entire_atmosphere=on"
         f"&lev_entire_atmosphere_%28considered_as_a_single_layer%29=on"
@@ -76,7 +80,7 @@ def find_cycle():
         date, hh = c.strftime("%Y%m%d"), c.strftime("%H")
         try:
             data = fetch(url(date, hh, 1), CYCLE_TIMEOUT)
-            open("/tmp/g_001.grib2", "wb").write(data)
+            open(f"{OUT}/g_001.grib2", "wb").write(data)
             return date, hh
         except Exception as e:
             print(f"cycle probe {date} {hh}Z: {e}", file=sys.stderr)
@@ -106,7 +110,7 @@ def main():
                 return False
             try:
                 data = fetch(url(date, hh, fh), DL_TIMEOUT)
-                open(f"/tmp/g_{fh:03d}.grib2", "wb").write(data)
+                open(f"{OUT}/g_{fh:03d}.grib2", "wb").write(data)
                 return True
             except Exception as e:
                 print(f"download warn f{fh} ({attempt}/{DL_ATTEMPTS}): {e}", file=sys.stderr)
@@ -125,7 +129,7 @@ def main():
 
     def rd(fh, keys):
         return xr.open_dataset(
-            f"/tmp/g_{fh:03d}.grib2",
+            f"{OUT}/g_{fh:03d}.grib2",
             engine="cfgrib",
             backend_kwargs={"filter_by_keys": keys, "indexpath": ""},
         )
@@ -137,6 +141,8 @@ def main():
     apcp = np.zeros((H, NLAT, NLON), np.float32)
     cloud = np.full_like(temp, np.nan)
     wx = np.full_like(temp, np.nan)
+    gust = np.full_like(temp, np.nan)
+    vis = np.full_like(temp, np.nan)
     for i, fh in enumerate(FHOURS):
         try:
             temp[i] = (rd(fh, {"typeOfLevel": "heightAboveGround", "level": 2, "shortName": "2t"})["t2m"].values - 273.15)
@@ -152,6 +158,12 @@ def main():
                 wx[i] = bits
             except Exception as e:
                 print(f"note f{fh} ptype flags: {e}", file=sys.stderr)
+            for arr, sn in ((gust, "gust"), (vis, "vis")):
+                try:  # 無ければ NaN（他の項目は落とさない）
+                    ds_ = rd(fh, {"typeOfLevel": "surface", "stepType": "instant", "shortName": sn})
+                    arr[i] = np.asarray(ds_[list(ds_.data_vars)[0]].values)
+                except Exception as e:
+                    print(f"note f{fh} {sn}: {e}", file=sys.stderr)
             try:
                 apcp[i] = rd(fh, {"typeOfLevel": "surface", "stepType": "accum", "shortName": "tp"})["tp"].values
             except Exception:
@@ -231,8 +243,8 @@ def main():
     # 出力バイト列は旧方式と一致することをミニチュアで確認済み。
     V = len(VARS)
     KEEP = sparse.keep_regular(NLAT, NLON, RES)
-    sparse.slot_index(KEEP).tofile("/tmp/gfs_s_idx.bin")
-    with open("/tmp/gfs.bin", "wb") as f:
+    sparse.slot_index(KEEP).tofile(f"{OUT}/gfs_s_idx.bin")
+    with open(f"{OUT}/gfs.bin", "wb") as f:
         for iy in range(NLAT):
             # ★ float16（R2 無料枠 10GB の対策 2026-09-29。分解能は Worker の 0.1 丸めより細かい）。
             row = np.empty((NLON, H, V), dtype="<f2")
@@ -242,14 +254,21 @@ def main():
             row[:, :, 3] = precip[:, iy, :].T
             row[:, :, 4] = cloud[:, iy, :].T
             row[:, :, 5] = wx[:, iy, :].T
+            row[:, :, 6] = gust[:, iy, :].T
+            row[:, :, 7] = vis[:, iy, :].T  # f2 の上限 65504 m より上は inf → 下で 65504 に丸める
+            np.clip(row[:, :, 7], None, 65504, out=row[:, :, 7])
             row[KEEP[iy]].tofile(f)
     meta = {
         "cycle": f"{date[0:4]}-{date[4:6]}-{date[6:8]}T{hh}:00:00Z",
         "nLat": NLAT, "nLon": NLON, "res": RES, "dtype": "f2", "bin": "gfs_s.bin", "idx": "gfs_s_idx.bin", "nSlot": int(KEEP.sum()), "fhours": FHOURS, "vars": VARS,
     }
-    open("/tmp/gfs_meta.json", "w").write(json.dumps(meta))
-    print(f"built gfs.bin {os.path.getsize('/tmp/gfs.bin')} bytes, cycle {meta['cycle']}")
+    open(f"{OUT}/gfs_meta.json", "w").write(json.dumps(meta))
+    print(f"built gfs.bin {os.path.getsize(f'{OUT}/gfs.bin')} bytes, cycle {meta['cycle']}")
 
+    print(f"gust parsed for {int(np.isfinite(gust).any(axis=(1, 2)).sum())}/{H} hours, vis {int(np.isfinite(vis).any(axis=(1, 2)).sum())}/{H}")
+    if LOCAL:
+        print(f"--local: wrote {OUT}/gfs.bin, gfs_s_idx.bin, gfs_meta.json (not uploaded)")
+        return
     s3 = boto3.client(
         "s3",
         endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
@@ -258,7 +277,7 @@ def main():
         region_name="auto",
     )
     # bin を先に、meta を後に（Worker は meta の cycle を信頼するため整合順）
-    sparse.publish(s3, BUCKET, "/tmp/gfs.bin", "/tmp/gfs_s_idx.bin", "/tmp/gfs_meta.json", "gfs")
+    sparse.publish(s3, BUCKET, f"{OUT}/gfs.bin", f"{OUT}/gfs_s_idx.bin", f"{OUT}/gfs_meta.json", "gfs")
     print("uploaded to R2 OK")
 
 
