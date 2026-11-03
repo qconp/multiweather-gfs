@@ -28,7 +28,7 @@ import boto3
 #   ほぼ一致したので、GFS も揃える。容量は増えるがセル読み出しは 1 セル分のままで変わらない。
 RES = 0.25
 NLAT, NLON = 721, 1440
-FHOURS = list(range(1, 49))          # f001..f048（1時間刻み・48h）
+FHOURS = list(range(1, 121))         # f001..f120（1時間刻み・5 日。2026-11-03 に 48h から延長）
 VARS = ["temp", "wind", "windDir", "precip", "cloud", "wx", "gust", "vis"]
 # ★ gust = GFS 自身の地上の突風 GUST（m/s・瞬時値）、vis = 地上の視程 VIS（m・瞬時値）。そのまま運ぶ
 #   （2026-10-30 オーナー承認。アプリの「風速・突風」「視程」パネルに出る）。
@@ -46,7 +46,7 @@ DL_TIMEOUT = 90          # 1本あたり秒
 DL_ATTEMPTS = 3          # 同一時間の再試行回数
 DL_DEADLINE = 15 * 60    # ダウンロード全体の締切（ジョブ上限25分に対する余裕）
 CYCLE_TIMEOUT = 20       # サイクル探索は速く諦める（4回遡っても80秒）
-MIN_HOURS = 40           # これを下回る時間しか揃わなければアップロードしない
+MIN_HOURS = 100          # これを下回る時間しか揃わなければアップロードしない
 
 
 def url(date, hh, fh):
