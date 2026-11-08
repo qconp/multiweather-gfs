@@ -1,5 +1,5 @@
 name: R2 usage (read-only)
-# 週 1 回（月曜 00:00 UTC）全バケットの容量を数え、9GB を超えたら失敗＝通知メール。読むだけ。
+# 週 1 回（月曜 00:00 UTC）全バケットの容量を数え、15GB を超えたら失敗＝通知メール。読むだけ。
 on:
   schedule:
     - cron: "0 0 * * 1"
@@ -18,6 +18,8 @@ jobs:
       - run: pip install boto3
       - env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # 監視専用の鍵（全バケットの Object Read only）。書き込み用の R2_ACCESS_KEY_ID は
+          # multiweather-gfs だけに絞ってあり、全バケットを一覧できないため分けている（2026-11-08）。
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_USAGE_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_USAGE_SECRET_ACCESS_KEY }}
         run: python r2_usage.py
