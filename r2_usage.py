@@ -22,16 +22,23 @@ try:
 except Exception as e:
     print("list_buckets not permitted (KNOWN_BUCKETS で数える):", e)
     buckets = KNOWN_BUCKETS
+unreadable = []
 for b in buckets:
     n = sz = 0; top = []
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=b):
-        for o in page.get("Contents", []):
-            n += 1; sz += o["Size"]; top.append((o["Size"], o["Key"]))
+    try:
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=b):
+            for o in page.get("Contents", []):
+                n += 1; sz += o["Size"]; top.append((o["Size"], o["Key"]))
+    except Exception as e:
+        # 1 本読めなくても最後まで数え、読めなかったものをまとめて失敗にする（どの鍵の範囲が足りないかを一度で知る）。
+        print(f"{b}: 読めない ({type(e).__name__})"); unreadable.append(b); continue
     total += sz
     print(f"{b}: {sz/1e9:.2f} GB, {n} objects")
     for s, k in sorted(top, reverse=True)[:15]:
         print(f"   {s/1e6:9.0f} MB  {k}")
 print(f"TOTAL {total/1e9:.2f} GB")
+if unreadable:
+    raise SystemExit(f"読めなかったバケット（鍵の範囲を確認）: {unreadable}")
 # R2 は有料プラン（2026-10）。閾値は「想定外の増え方」に気づくためのもの。
 # 2026-10-30 の高解像度化（ICON-EU 原解像度・ICON-D2・GFS 突風/視程）後の見込みは multiweather-gfs だけで約 3.0 GB。
 # 2026-11-08: 6.32 GB（天気 3.17）。HRRR・ICON-EU 原解像度・AROME で +約 2.7 GB の見込み → 15 に。
