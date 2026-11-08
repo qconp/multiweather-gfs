@@ -6,12 +6,22 @@ s3 = boto3.client("s3", endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.
                   aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
                   region_name="auto")
 total = 0
+# バケットの一覧。ListBuckets は Admin 権限が要るので、Object Read only の鍵で数えられるよう名前を書く。
+# ★ 新しいバケットを作ったらここに足す（2026-11-08 時点の全 17 本・r2-usage の実行結果から）。
+KNOWN_BUCKETS = [
+    "app-review-assets", "coastline-cells", "coastline-cells-full", "encrypted-temp-storage-bucket",
+    "gnss-tle-cache", "housenumber-tile-cache", "housenumber-tiles", "lost-found-share-bucket",
+    "map-shape-cutout-delivery", "map-shape-cutout-land", "multiweather-gfs", "onsite-memo-share-bucket",
+    "qconp-basemap", "river-lake-tiles", "sea-tidegrid", "tide-archive", "wireless-bell-photo-bucket",
+]
 try:
     buckets = [b["Name"] for b in s3.list_buckets()["Buckets"]]
+    missing = sorted(set(buckets) - set(KNOWN_BUCKETS))
+    if missing:
+        print("KNOWN_BUCKETS に無いバケット（足すこと）:", missing)
 except Exception as e:
-    # 一覧が取れないまま 1 バケットだけ数えて成功にすると、全体の増え方を見落とす（2026-11-08 に実際に起きた）。
-    # 監視用の鍵は「Admin Read only」が要る（Object Read only では ListBuckets が拒否される）。
-    raise SystemExit(f"list_buckets not permitted (監視用の鍵に Admin Read only が要る): {e}")
+    print("list_buckets not permitted (KNOWN_BUCKETS で数える):", e)
+    buckets = KNOWN_BUCKETS
 for b in buckets:
     n = sz = 0; top = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=b):
