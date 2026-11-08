@@ -9,7 +9,9 @@ total = 0
 try:
     buckets = [b["Name"] for b in s3.list_buckets()["Buckets"]]
 except Exception as e:
-    print("list_buckets not permitted:", e); buckets = [os.environ.get("R2_BUCKET", "multiweather-gfs")]
+    # 一覧が取れないまま 1 バケットだけ数えて成功にすると、全体の増え方を見落とす（2026-11-08 に実際に起きた）。
+    # 監視用の鍵は「Admin Read only」が要る（Object Read only では ListBuckets が拒否される）。
+    raise SystemExit(f"list_buckets not permitted (監視用の鍵に Admin Read only が要る): {e}")
 for b in buckets:
     n = sz = 0; top = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=b):
