@@ -1,0 +1,32 @@
+name: AROME to R2 (Multi Weather)
+
+# Météo-France open data AROME 0.025°（SP1 パッケージ・3 時間ごとの回・+51h・Licence Ouverte 2.0）を取得し R2 に配信する。
+# 回は約 4 時間 20 分後にそろう（実測 2026-11-08）。Worker の Cron が 04:40/10:40/16:40/22:40 に起動し、
+# ここの定時実行は予備。手動実行(workflow_dispatch)も可。最新の「49H51H までそろった回」を選ぶ。
+# 出典の扱い: 機関名は Worker が配るアプリ内の出典表記だけ（アプリ名・キーワードには置かない）。
+on:
+  schedule:
+    - cron: "55 4,10,16,22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 9 組（各 ~50 MB）を 1 組ずつ落として読んで消す。フランス周辺の内側の矩形の陸と沿岸だけ詰めて上げる。
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build AROME binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python arome_update.py
