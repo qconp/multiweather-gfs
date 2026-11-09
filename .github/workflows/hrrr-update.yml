@@ -1,0 +1,32 @@
+name: HRRR to R2 (Multi Weather)
+
+# NOAA HRRR（米国本土 3 km・00/06/12/18Z の回・+48h 毎時）を AWS Open Data から .idx の範囲指定で必要な電文だけ取得し、
+# 米国内（Natural Earth の国境 + 6 km）の陸と沿岸のセルだけ詰めて R2 に配信する。
+# 回の +48h は約 1 時間 50 分後にそろう。Worker の Cron が 02:30/08:30/14:30/20:30 に起動し、ここの定時実行は予備。
+# 出典の扱い: 機関名は Worker が配るアプリ内の出典表記だけ（アプリ名・キーワードには置かない）。
+on:
+  schedule:
+    - cron: "50 2,8,14,20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 49 ステップ × 6 電文（各 ~1.5 MB）を範囲指定で取る。詰めた出力は ~530 MB、ピークメモリ ~0.7 GB。
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build HRRR binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python hrrr_update.py
