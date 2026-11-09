@@ -1,0 +1,32 @@
+name: ICON-2I to R2 (Multi Weather)
+
+# ItaliaMeteo-ARPAE の ICON-2I open data（00/12Z・+72h・0.02°×0.025°・CC BY 4.0）を取得し R2 に配信する。
+# 公開は 00Z → 02:20Z ごろ、12Z → 14:00Z ごろ（実測 2026-11-08）。Worker の Cron が 03:20 / 15:20 に起動し、
+# ここの定時実行は予備。手動実行(workflow_dispatch)も可。
+# 出典の扱い: 機関名は Worker が配るアプリ内の出典表記だけ（アプリ名・キーワードには置かない）。
+on:
+  schedule:
+    - cron: "40 3,15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 1 回 ~760 MB の GRIB を 1 本ダウンロードし、イタリア周辺の内側の矩形の陸と沿岸だけ詰めて上げる。
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build ICON-2I binary and upload to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python icon2i_update.py
